@@ -4,8 +4,8 @@
 #SBATCH -A did_tesi_nlp_330
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=32
-#SBATCH --gpus-per-task=4
+#SBATCH --cpus-per-task=24
+#SBATCH --gres=gpu:a100:4
 #SBATCH --time=06:00:00
 #SBATCH --output=/home/G.DAMBROSIO65/nla_logs/nla-%j.out
 #SBATCH --error=/home/G.DAMBROSIO65/nla_logs/nla-%j.err
@@ -24,8 +24,18 @@ module purge || true
 module load cuda/12.2 || module load cuda/12.1 || true
 source /home/G.DAMBROSIO65/venvs/nla-training-cu12/bin/activate
 
-export HF_HOME=/home/G.DAMBROSIO65/hf_cache
-export HUGGINGFACE_HUB_CACHE=/home/G.DAMBROSIO65/hf_cache/hub
+# Selezione storage: BeeGFS ad alte prestazioni (se disponibile) o Home
+if [ -d "/mnt/beegfs/g.dambrosio65" ]; then
+    export HF_HOME="/mnt/beegfs/g.dambrosio65/hf_cache"
+    DATA_DIR="/mnt/beegfs/g.dambrosio65/nla_data"
+    CKPT_DIR="/mnt/beegfs/g.dambrosio65/nla_checkpoints"
+else
+    export HF_HOME="/home/G.DAMBROSIO65/hf_cache"
+    DATA_DIR="/home/G.DAMBROSIO65/nla_data"
+    CKPT_DIR="/home/G.DAMBROSIO65/nla_checkpoints"
+fi
+
+export HUGGINGFACE_HUB_CACHE="${HF_HOME}/hub"
 export HF_DATASETS_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
 export OMP_NUM_THREADS=8
@@ -37,14 +47,14 @@ cd "${WORKDIR}"
 echo "=== [Fase 1/2] Estrazione Attivazioni su Granite 4.2 3B ==="
 python cluster/extract_activations.py \
     --model "ibm-granite/granite-4.2-3b" \
-    --output_dir "/home/G.DAMBROSIO65/nla_data/activations" \
+    --output_dir "${DATA_DIR}/activations" \
     --layers 16 20 28 \
     --max_samples 5000
 
 echo "=== [Fase 2/2] Addestramento Natural Language Autoencoder (Layer 20) ==="
 python cluster/train_nla.py \
-    --shards_dir "/home/G.DAMBROSIO65/nla_data/activations" \
-    --output_dir "/home/G.DAMBROSIO65/nla_checkpoints" \
+    --shards_dir "${DATA_DIR}/activations" \
+    --output_dir "${CKPT_DIR}" \
     --model "ibm-granite/granite-4.2-3b" \
     --layer "layer_20" \
     --epochs 3 \
