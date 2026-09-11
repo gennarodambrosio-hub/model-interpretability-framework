@@ -73,6 +73,7 @@ def train_nla(
     shards_dir: str,
     output_dir: str,
     actor_model_id: str = "ibm-granite/granite-4.2-3b",
+    resume_from: Optional[str] = None,
     layer_key: str = "layer_20",
     batch_size: int = 8,
     epochs: int = 3,
@@ -109,21 +110,32 @@ def train_nla(
         tokenizer.pad_token = tokenizer.eos_token
 
     # 3. Models
-    print("Caricamento Actor...")
+    if resume_from and (Path(resume_from) / "actor").exists():
+        actor_load_path = str(Path(resume_from) / "actor")
+        print(f"🔄 Ripresa training Actor dal checkpoint: {actor_load_path}...")
+    else:
+        actor_load_path = actor_model_id
+        print(f"Caricamento Actor base: {actor_load_path}...")
+
     actor = AutoModelForCausalLM.from_pretrained(
-        actor_model_id,
+        actor_load_path,
         trust_remote_code=True,
         torch_dtype=torch.bfloat16,
     ).to(actor_device)
     d_model = actor.config.hidden_size
 
-    print("Caricamento Critic...")
+    print(f"Caricamento Critic base: {actor_model_id}...")
     critic_base = AutoModelForCausalLM.from_pretrained(
         actor_model_id,
         trust_remote_code=True,
         torch_dtype=torch.bfloat16,
     ).to(critic_device)
     critic = NLACriticModule(critic_base, d_model=d_model, device=critic_device)
+
+    if resume_from and (Path(resume_from) / "critic.pt").exists():
+        critic_ckpt_path = Path(resume_from) / "critic.pt"
+        print(f"🔄 Ripresa pesi Critic dal checkpoint: {critic_ckpt_path}...")
+        critic.load_state_dict(torch.load(critic_ckpt_path, map_location=critic_device))
 
     optimizer = torch.optim.AdamW(
         list(actor.parameters()) + list(critic.parameters()),
@@ -198,6 +210,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Training NLA su 4x A100")
     parser.add_argument("--shards_dir", type=str, default="/mnt/beegfs/g.dambrosio65/nla_data/activations")
     parser.add_argument("--output_dir", type=str, default="/mnt/beegfs/g.dambrosio65/nla_checkpoints")
+    parser.add_argument("--resume_from", type=str, default=None, help="Path a un checkpoint esistente da cui continuare (es. checkpoint_epoch_3)")
     parser.add_argument("--model", type=str, default="ibm-granite/granite-4.2-3b")
     parser.add_argument("--layer", type=str, default="layer_20")
     parser.add_argument("--epochs", type=int, default=3)
@@ -209,6 +222,7 @@ if __name__ == "__main__":
         shards_dir=args.shards_dir,
         output_dir=args.output_dir,
         actor_model_id=args.model,
+        resume_from=args.resume_from,
         layer_key=args.layer,
         batch_size=args.batch_size,
         epochs=args.epochs,
