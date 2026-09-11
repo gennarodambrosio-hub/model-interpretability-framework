@@ -4,6 +4,8 @@ Implements the Anthropic NLA training loop:
 1. Actor (Verbalizer) maps activation vector -> explanation text.
 2. Critic (Reconstructor) maps explanation text -> reconstructed activation vector.
 3. Loss = MSE(original_activation, reconstructed_activation).
+
+Explicitly pins Actor to GPU:0/1 and Critic to GPU:2/3 to prevent multi-device tensor mismatches.
 """
 
 from __future__ import annotations
@@ -47,12 +49,15 @@ class ActivationDataset(Dataset):
 class NLACriticModule(nn.Module):
     """Critic model that reconstructs the activation vector from explanation token embeddings."""
 
-    def __init__(self, base_model: nn.Module, d_model: int):
+    def __init__(self, base_model: nn.Module, d_model: int, device: torch.device):
         super().__init__()
         self.base_model = base_model
-        self.recon_head = nn.Linear(d_model, d_model, bias=False)
+        self.recon_head = nn.Linear(d_model, d_model, bias=False, dtype=torch.bfloat16, device=device)
+        self.device = device
 
     def forward(self, input_ids: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
+        input_ids = input_ids.to(self.device)
+        attention_mask = attention_mask.to(self.device)
         outputs = self.base_model(
             input_ids=input_ids,
             attention_mask=attention_mask,
@@ -69,7 +74,7 @@ def train_nla(
     output_dir: str,
     actor_model_id: str = "ibm-granite/granite-4.2-3b",
     layer_key: str = "layer_20",
-    batch_size: int = 4,
+    batch_size: int = 8,
     epochs: int = 3,
     lr: float = 1e-5,
     injection_scale: float = 150.0,
@@ -77,12 +82,26 @@ def train_nla(
     out_path = Path(output_dir)
     out_path.mkdir(parents=True, exist_ok=True)
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Avvio NLA Training su {device} con 4x A100...")
+    num_gpus = torch.cuda.device_count()
+    print(f"GPU disponibili nel nodo: {num_gpus}")
+
+    # Dedicate GPU 0 (or 0-1) to Actor, and GPU 1 (or 2-3) to Critic
+    if num_gpus >= 4:
+        actor_device = torch.device("cuda:0")
+        critic_device = torch.device("cuda:2")
+    elif num_gpus >= 2:
+        actor_device = torch.device("cuda:0")
+        critic_device = torch.device("cuda:1")
+    else:
+        actor_device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+        critic_device = actor_device
+
+    print(f"Actor allocato su: {actor_device}")
+    print(f"Critic allocato su: {critic_device}")
 
     # 1. Dataset
     dataset = ActivationDataset(shards_dir=shards_dir, layer_key=layer_key)
-    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
+    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, drop_last=True)
 
     # 2. Tokenizer
     tokenizer = AutoTokenizer.from_pretrained(actor_model_id, trust_remote_code=True)
@@ -90,22 +109,21 @@ def train_nla(
         tokenizer.pad_token = tokenizer.eos_token
 
     # 3. Models
-    print("Caricamento Actor & Critic...")
+    print("Caricamento Actor...")
     actor = AutoModelForCausalLM.from_pretrained(
         actor_model_id,
         trust_remote_code=True,
         torch_dtype=torch.bfloat16,
-        device_map="auto",
-    )
+    ).to(actor_device)
     d_model = actor.config.hidden_size
 
+    print("Caricamento Critic...")
     critic_base = AutoModelForCausalLM.from_pretrained(
         actor_model_id,
         trust_remote_code=True,
         torch_dtype=torch.bfloat16,
-        device_map="auto",
-    )
-    critic = NLACriticModule(critic_base, d_model=d_model).to(device)
+    ).to(critic_device)
+    critic = NLACriticModule(critic_base, d_model=d_model, device=critic_device)
 
     optimizer = torch.optim.AdamW(
         list(actor.parameters()) + list(critic.parameters()),
@@ -117,7 +135,7 @@ def train_nla(
     prompt_prefix = "Explain the concept represented by this activation: "
     prompt_suffix = " Explanation: "
 
-    print("Inizio Training Loop...")
+    print(f"Inizio Training Loop ({epochs} epoche, batch_size={batch_size})...")
     for epoch in range(epochs):
         actor.train()
         critic.train()
@@ -126,16 +144,14 @@ def train_nla(
 
         pbar = tqdm(dataloader, desc=f"Epoch {epoch + 1}/{epochs}")
         for orig_vectors in pbar:
-            orig_vectors = orig_vectors.to(device)  # [B, d_model]
-
-            # Normalize activation vectors according to Anthropic specification
+            # Scale on CPU / Actor device
             norms = torch.linalg.vector_norm(orig_vectors, dim=-1, keepdim=True).clamp(min=1e-8)
             scaled_vectors = orig_vectors * (injection_scale / norms)
 
-            # Build prompts
+            # Prompts for Actor
             batch_size_cur = orig_vectors.shape[0]
             prompts = [prompt_prefix + prompt_suffix for _ in range(batch_size_cur)]
-            inputs = tokenizer(prompts, return_tensors="pt", padding=True).to(device)
+            inputs = tokenizer(prompts, return_tensors="pt", padding=True).to(actor_device)
 
             # Actor generates explanation text
             with torch.no_grad():
@@ -146,12 +162,14 @@ def train_nla(
                     temperature=0.7,
                 )
 
-            # Critic reads explanation text and reconstructs the activation vector
-            critic_inputs = {"input_ids": gen_tokens, "attention_mask": torch.ones_like(gen_tokens)}
-            reconstructed_vectors = critic(**critic_inputs)  # [B, d_model]
+            # Critic reads explanation on critic_device
+            gen_tokens_critic = gen_tokens.to(critic_device)
+            attention_mask_critic = torch.ones_like(gen_tokens_critic, device=critic_device)
+            reconstructed_vectors = critic(gen_tokens_critic, attention_mask_critic)  # [B, d_model] on critic_device
 
-            # Loss is MSE between original scaled vector and reconstructed vector
-            loss = mse_criterion(reconstructed_vectors, scaled_vectors.to(reconstructed_vectors.dtype))
+            # Transfer target vectors to critic_device for MSE computation
+            target_vectors_critic = scaled_vectors.to(critic_device).to(reconstructed_vectors.dtype)
+            loss = mse_criterion(reconstructed_vectors, target_vectors_critic)
 
             optimizer.zero_grad()
             loss.backward()
@@ -168,22 +186,22 @@ def train_nla(
 
         # Checkpoint save
         epoch_dir = out_path / f"checkpoint_epoch_{epoch + 1}"
-        epoch_dir.mkdir(exist_ok=True)
+        epoch_dir.mkdir(parents=True, exist_ok=True)
         actor.save_pretrained(epoch_dir / "actor")
         torch.save(critic.state_dict(), epoch_dir / "critic.pt")
-        print(f"Checkpoint salvato in {epoch_dir}")
+        print(f"✅ Checkpoint salvato in {epoch_dir}")
 
-    print("Addestramento NLA completato con successo!")
+    print("🎉 Addestramento NLA completato con successo!")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Training NLA su 4x A100")
-    parser.add_argument("--shards_dir", type=str, default="/home/G.DAMBROSIO65/nla_data/activations")
-    parser.add_argument("--output_dir", type=str, default="/home/G.DAMBROSIO65/nla_checkpoints")
+    parser.add_argument("--shards_dir", type=str, default="/mnt/beegfs/g.dambrosio65/nla_data/activations")
+    parser.add_argument("--output_dir", type=str, default="/mnt/beegfs/g.dambrosio65/nla_checkpoints")
     parser.add_argument("--model", type=str, default="ibm-granite/granite-4.2-3b")
     parser.add_argument("--layer", type=str, default="layer_20")
     parser.add_argument("--epochs", type=int, default=3)
-    parser.add_argument("--batch_size", type=int, default=4)
+    parser.add_argument("--batch_size", type=int, default=8)
     parser.add_argument("--lr", type=float, default=1e-5)
     args = parser.parse_args()
 
