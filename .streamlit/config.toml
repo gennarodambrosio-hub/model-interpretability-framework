@@ -1,0 +1,9 @@
+[server]
+headless = false
+fileWatcherType = "watchdog"
+
+[browser]
+gatherUsageStats = false
+
+[client]
+toolbarMode = "minimal"
