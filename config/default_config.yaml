@@ -1,0 +1,27 @@
+model:
+  # Primary target model: Granite 4.2 3B (runs unquantized on Apple Silicon M5)
+  default_model_id: "ibm-granite/granite-4.2-3b"
+  fallback_model_id: "ibm-granite/granite-3.2-2b-instruct"
+  alternative_8b_id: "ibm-granite/granite-4.2-8b"
+  torch_dtype: "bfloat16"   # "bfloat16" or "float16"
+  device: "auto"            # "mps" for Apple Silicon GPU, "cuda", or "cpu"
+  trust_remote_code: true
+  max_new_tokens: 256
+  temperature: 0.7
+
+interpretability:
+  # Residual stream extraction points
+  default_layer: "middle"   # "early" (layer 4), "middle" (layer 16), "late" (layer 28), or integer
+  top_k_tokens: 10          # Number of top tokens to display in Logit Lens
+  use_logit_lens: true
+  use_semantic_verbalizer: true
+
+nla:
+  # Anthropic Natural Language Autoencoders parameters
+  enabled: true
+  # Marker token used to inject the activation embedding into the prompt
+  injection_char: "㈎"
+  # Default L2 norm scaling factor for residual stream vector injection
+  default_injection_scale: 150.0
+  explanation_tag: "explanation"
+  prompt_template: "<|im_start|>user\nWhat is the concept represented by this activation: <concept>{injection_char}</concept>? Explain concisely inside <explanation>...</explanation> tags.<|im_end|>\n<|im_start|>assistant\n"
