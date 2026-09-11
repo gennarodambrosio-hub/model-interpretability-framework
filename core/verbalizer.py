@@ -50,7 +50,7 @@ class ActivationVerbalizer:
         self.top_k = top_k
         self.device = next(unembedding_head.parameters()).device
 
-    @torch.inference_mode()
+    @torch.no_grad()
     def project_to_vocabulary(self, activation_vector: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """Projects a residual stream vector h_l onto the vocabulary space: logits = W_U * norm(h_l)."""
         vec = activation_vector.to(self.device)

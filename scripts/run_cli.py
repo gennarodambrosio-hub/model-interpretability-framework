@@ -42,8 +42,11 @@ def run_cli(prompt: str, model_id: str, target_layer: int, max_tokens: int):
     console.print(f"\n[bold green]Input Prompt:[/bold green] {prompt}")
     console.print("[dim]Esecuzione forward pass con cattura del residual stream...[/dim]")
 
-    with hook_mgr.capture():
-        gen_result = engine.generate(prompt=prompt, max_new_tokens=max_tokens)
+    gen_result = engine.generate_and_inspect(
+        prompt=prompt,
+        hook_manager=hook_mgr,
+        max_new_tokens=max_tokens,
+    )
 
     output_text = gen_result["output_text"]
     console.print(f"[bold green]Output Generato:[/bold green] {output_text.strip()}\n")

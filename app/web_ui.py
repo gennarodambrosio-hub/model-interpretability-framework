@@ -121,12 +121,12 @@ def main():
     if st.button("🚀 Invia Input & Ispeziona Attivazioni", type="primary"):
         with st.spinner("Esecuzione forward pass ed estrazione attivazioni..."):
             hook_mgr = ResidualStreamHookManager(layers)
-            with hook_mgr.capture():
-                gen_result = engine.generate(
-                    prompt=prompt,
-                    max_new_tokens=max_new_tokens,
-                    temperature=temperature,
-                )
+            gen_result = engine.generate_and_inspect(
+                prompt=prompt,
+                hook_manager=hook_mgr,
+                max_new_tokens=max_new_tokens,
+                temperature=temperature,
+            )
             st.session_state["gen_result"] = gen_result
             st.session_state["hook_mgr"] = hook_mgr
 

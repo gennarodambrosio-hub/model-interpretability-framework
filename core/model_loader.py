@@ -146,7 +146,7 @@ class GraniteEngine:
             return self.model.lm_head
         raise AttributeError("No lm_head found on model.")
 
-    @torch.inference_mode()
+    @torch.no_grad()
     def generate(
         self,
         prompt: str,
@@ -190,3 +190,26 @@ class GraniteEngine:
             "input_ids": input_ids,
             "output_ids": output_ids,
         }
+
+    @torch.no_grad()
+    def generate_and_inspect(
+        self,
+        prompt: str,
+        hook_manager: Any,
+        max_new_tokens: int = 256,
+        temperature: float = 0.7,
+        top_p: float = 0.9,
+    ) -> Dict[str, Any]:
+        """Generates text and then runs a forward pass on the full output sequence with hook_manager attached."""
+        gen_result = self.generate(
+            prompt=prompt,
+            max_new_tokens=max_new_tokens,
+            temperature=temperature,
+            top_p=top_p,
+        )
+        # Clone output_ids to avoid inference tensor issues and run forward pass to capture all tokens
+        seq_tensor = gen_result["output_ids"].clone().to(self.device)
+        with hook_manager.capture():
+            self.model(seq_tensor)
+
+        return gen_result
