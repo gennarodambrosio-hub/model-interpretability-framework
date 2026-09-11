@@ -2,18 +2,42 @@
 # Script di setup ambiente virtuale per 4x A100 sul cluster HPC UNISA (partizione gpuq)
 set -euo pipefail
 
-echo "=== [1/5] Creazione directory su HPC ==="
-mkdir -p ~/tools
-mkdir -p ~/venvs
-mkdir -p ~/hf_cache
-mkdir -p ~/nla_data/activations
-mkdir -p ~/nla_checkpoints
-mkdir -p ~/nla_logs
+echo "=== [1/5] Gestione Storage ad alte prestazioni BeeGFS (quota home) ==="
+# Se esiste BeeGFS, spostiamo la cache dei modelli lì per non saturare la home (/home ha quota ridotta)
+if [ -d "/mnt/beegfs/g.dambrosio65" ]; then
+    echo "Rilevato storage BeeGFS in /mnt/beegfs/g.dambrosio65. Configuro cache e symlink..."
+    mkdir -p /mnt/beegfs/g.dambrosio65/hf_cache/hub
+    mkdir -p /mnt/beegfs/g.dambrosio65/nla_data/activations
+    mkdir -p /mnt/beegfs/g.dambrosio65/nla_checkpoints
+
+    # Se esiste già ~/hf_cache come cartella reale con file dentro, spostiamo i dati su BeeGFS
+    if [ -d "$HOME/hf_cache" ] && [ ! -L "$HOME/hf_cache" ]; then
+        echo "Sposto i file già scaricati da ~/hf_cache su BeeGFS per liberare spazio su /home..."
+        cp -rn "$HOME/hf_cache/"* /mnt/beegfs/g.dambrosio65/hf_cache/ 2>/dev/null || true
+        rm -rf "$HOME/hf_cache"
+    fi
+    ln -sfn /mnt/beegfs/g.dambrosio65/hf_cache "$HOME/hf_cache"
+    mkdir -p "$HOME/.cache"
+    ln -sfn /mnt/beegfs/g.dambrosio65/hf_cache "$HOME/.cache/huggingface"
+
+    export HF_HOME="/mnt/beegfs/g.dambrosio65/hf_cache"
+    export HUGGINGFACE_HUB_CACHE="/mnt/beegfs/g.dambrosio65/hf_cache/hub"
+else
+    mkdir -p "$HOME/hf_cache"
+    mkdir -p "$HOME/nla_data/activations"
+    mkdir -p "$HOME/nla_checkpoints"
+    export HF_HOME="$HOME/hf_cache"
+    export HUGGINGFACE_HUB_CACHE="$HOME/hf_cache/hub"
+fi
+
+mkdir -p "$HOME/tools"
+mkdir -p "$HOME/venvs"
+mkdir -p "$HOME/nla_logs"
 
 echo "=== [2/5] Creazione Virtualenv senza ensurepip (usando virtualenv) ==="
-# Il Python di sistema Ubuntu su lnode02 non ha ensurepip installato.
-# Usiamo virtualenv come da documentazione cluster UNISA.
-if [ -d "$HOME/venvs/vllm-qwen36-cu129" ]; then
+if [ -d "$HOME/venvs/nla-training-cu12" ]; then
+    echo "Ambiente nla-training-cu12 già presente, lo attivo..."
+elif [ -d "$HOME/venvs/vllm-qwen36-cu129" ]; then
     echo "Trovato ambiente esistente vllm-qwen36-cu129, lo uso per bootstrap virtualenv..."
     source "$HOME/venvs/vllm-qwen36-cu129/bin/activate"
     python -m pip install -U virtualenv
@@ -42,8 +66,6 @@ pip install "transformers>=4.48.0" "accelerate>=0.34.0" safetensors datasets trl
 pip install sentencepiece tiktoken pyyaml rich orjson httpx pydantic pyarrow
 
 echo "=== [5/5] Pre-download offline di Granite 4.2 e dataset su LOGIN NODE ==="
-export HF_HOME="$HOME/hf_cache"
-export HUGGINGFACE_HUB_CACHE="$HOME/hf_cache/hub"
 python cluster/pre_download_login_node.py
 
 echo "=========================================================================="
