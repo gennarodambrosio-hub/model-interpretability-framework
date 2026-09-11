@@ -81,7 +81,7 @@ class GraniteEngine:
         
         load_kwargs: Dict[str, Any] = {
             "trust_remote_code": True,
-            "torch_dtype": self.dtype,
+            "dtype": self.dtype,
         }
         
         if self.load_in_4bit:

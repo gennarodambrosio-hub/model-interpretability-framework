@@ -261,7 +261,7 @@ def main():
 
         with tab_nla_info:
             st.markdown(
-                """
+                r"""
                 ### Come funziona la tecnica Natural Language Autoencoder (Anthropic)
                 Nel paper di Anthropic (*Turning Claude's thoughts into text*):
                 1. **Target Model (Frozen):** Il modello target (es. Granite) riceve l'input ed estrae il vettore $h_l \in \mathbb{R}^{d_{model}}$.
