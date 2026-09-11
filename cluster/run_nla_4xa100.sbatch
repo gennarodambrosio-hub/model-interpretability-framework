@@ -19,9 +19,7 @@ echo "GPU assegnate:"
 nvidia-smi --query-gpu=index,name,memory.total --format=csv,noheader
 echo "================================================================="
 
-# Caricamento ambiente
-module purge || true
-module load cuda/12.2 || module load cuda/12.1 || true
+# Attivazione ambiente virtuale
 source /home/G.DAMBROSIO65/venvs/nla-training-cu12/bin/activate
 
 # Selezione storage: BeeGFS ad alte prestazioni (se disponibile) o Home
