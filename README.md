@@ -103,53 +103,59 @@ model-interpretability-framework/
 
 ---
 
-## 🚀 Installazione e Setup
+## 🚀 Installazione e Guida Rapida per Docenti e Ricercatori
 
-1. **Clona o accedi al repository sulla Scrivania:**
-   ```bash
-   cd /Users/gennaro/Desktop/model-interpretability-framework
-   ```
+Per provare il sistema su qualsiasi macchina (Mac Apple Silicon, Linux con GPU NVIDIA o Windows):
 
-2. **Crea e attiva l'ambiente virtuale:**
-   ```bash
-   python3 -m venv .venv
-   source .venv/bin/activate
-   ```
+### 1. Clonazione del Repository
+```bash
+git clone https://github.com/gennarodambrosio-hub/model-interpretability-framework.git
+cd model-interpretability-framework
+```
 
-3. **Installa le dipendenze:**
-   ```bash
-   pip install -r requirements.txt
-   ```
+### 2. Creazione dell'Ambiente Virtuale (Python 3.10, 3.11 o 3.12)
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+```
+*(Su sistemi Windows: `.venv\Scripts\activate`)*
 
-4. **Verifica il modello Granite 4.2 3B:**
-   ```bash
-   python scripts/download_model.py --model ibm-granite/granite-4.2-3b
-   ```
+### 3. Installazione delle Dipendenze
+```bash
+pip install -r requirements.txt
+```
 
----
-
-## 🖥️ Utilizzo dell'Interfaccia Web (Streamlit)
-
-Avvia la dashboard interattiva con il comando:
+### 4. Avvio dell'Interfaccia Grafica Web (Streamlit)
 ```bash
 streamlit run app/web_ui.py
 ```
+> **Nota:** Al primissimo avvio, Hugging Face scaricherà automaticamente i pesi del modello Granite 4.2 3B nella cache locale (`~/.cache/huggingface/`). Tutti i successivi avvii saranno istantanei. L'applicazione si aprirà automaticamente nel browser all'indirizzo `http://localhost:8501`.
 
-L'interfaccia consente di:
-1. Scegliere tra **Granite 4.2 3B (non quantizzato)**, **Granite 3.2 2B** e **Granite 4.2 8B (4-bit)**.
-2. Inviare qualsiasi prompt e visualizzare la risposta generata (inclusa la modalità di ragionamento `<think>...</think>`).
-3. Selezionare qualsiasi token del prompt o dell'output generato tramite uno slider interattivo.
-4. Esplorare i layer del modello con la **Traduzione Semantica in Linguaggio Naturale**:
-   - Descrizione testuale del concetto interno elaborato.
-   - Grafico a barre interattivo dei top token proiettati.
-   - Tracciamento della traiettoria della norma L2 e similarità coseno fra layer consecutivi.
-5. Consultare la scheda metodologica dell'architettura **Anthropic NLA**.
+---
+
+## 🔬 Esperimento Guidato: Come "Leggere" il Pensiero Interno del Modello
+
+Per toccare con mano la decodifica delle attivazioni interne lungo il **Residual Stream** ($h_0 \to \dots \to h_{39}$):
+
+1. **Modello attivo:** Lasciare selezionato **Granite 4.2 3B** (non quantizzato, precisione bfloat16 preservata al 100%).
+2. **Prompt di Test:** Selezionare dal menu a tendina l'esempio di Dante:
+   > *"Nel mezzo del cammin di nostra vita, mi ritrovai per una selva"*
+   e cliccare su **`🚀 Invia Input & Ispeziona Attivazioni`**.
+3. **Mappa dei Token:** Nello slider al punto 3, selezionare il token finale del prompt: **`'va'`** (fine di *selva*).
+4. **Viaggio tra i Layer (Punto 4):**
+   * **Ai Layer Iniziali (Layer 04 - 12):** La proiezione Logit Lens mostra la comprensione letterale della parola: il modello attiva concetti come **`jungle`** (88.8%) e **`forest`** (63.0%).
+   * **Ai Layer Intermedi (Layer 20 - 28):** Si registra un picco di entropia (~10 bit); il modello apre la rete associativa e attiva attributi cromatici e ambientali (**`verde`**, **`libre`**, **`env`**).
+   * **Ai Layer Alti di Pianificazione (Layer 36):** L'entropia crolla e, **ancora prima di emettere le parole successive in output**, il modello attiva concetti semantici astratti legati allo smarrimento e all'oscurità:
+     - **`unfamiliar` (47.5%)** *(sconosciuta / perduta)*
+     - **`mysterious` (22.4%)** *(misteriosa)*
+     - **`unknown` (10.6%)** *(ignota)*
+   * **Al Layer Finale (Layer 39):** L'energia (Norma L2) sale a 99.00 e la testa di proiezione collassa sulla preposizione di continuità sintattica italiana **`"di"`** (54.2%), portando alla generazione del verso successivo.
 
 ---
 
 ## ⌨️ Utilizzo da Riga di Comando (CLI)
 
-È possibile testare un prompt ed estrarre la traduzione dell'attivazione direttamente dal terminale:
+Per test rapidi o ambienti headless senza interfaccia grafica:
 
 ```bash
 python scripts/run_cli.py \
