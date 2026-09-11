@@ -20,9 +20,14 @@ echo "=== [3/4] Upgrade pip e installazione PyTorch CUDA ==="
 pip install --upgrade pip setuptools wheel
 pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
 
-echo "=== [4/4] Installazione librerie LLM, Accelerate, FSDP, SGLang, Datasets ==="
+echo "=== [4/4] Installazione librerie LLM, Accelerate, Datasets ==="
 pip install transformers>=4.48.0 accelerate>=0.34.0 safetensors datasets trl
 pip install sentencepiece tiktoken pyyaml rich orjson httpx pydantic pyarrow
 pip install deepspeed packaging
 
-echo "Setup completato con successo in ~/venvs/nla-training-cu12 !"
+echo "=== [5/5] Pre-download offline del modello e dataset da LOGIN NODE ==="
+export HF_HOME=~/hf_cache
+export HUGGINGFACE_HUB_CACHE=~/hf_cache/hub
+python cluster/pre_download_login_node.py
+
+echo "Setup e pre-download completati con successo! I nodi di calcolo possono ora eseguire 100% offline."

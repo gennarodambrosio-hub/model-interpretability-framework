@@ -26,6 +26,8 @@ source /home/G.DAMBROSIO65/venvs/nla-training-cu12/bin/activate
 
 export HF_HOME=/home/G.DAMBROSIO65/hf_cache
 export HUGGINGFACE_HUB_CACHE=/home/G.DAMBROSIO65/hf_cache/hub
+export HF_DATASETS_OFFLINE=1
+export TRANSFORMERS_OFFLINE=1
 export OMP_NUM_THREADS=8
 export CUDA_VISIBLE_DEVICES=0,1,2,3
 

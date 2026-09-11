@@ -12,8 +12,15 @@ ssh g.dambrosio65@lnode02.hpc.unisa.it
 
 ---
 
-## 2. Clonazione del Progetto
-Sul cluster, posizionati nella tua home e clona il repository:
+> ⚠️ **REGOLA FONDAMENTALE DEL CLUSTER:**
+> Sui nodi di calcolo GPU (`gnodeXX`) assegnati da Slurm **NON c'è accesso a internet e non si installa nulla**.
+> Tutte le installazioni (`pip`) e il pre-download dei modelli/dataset avvengono **esclusivamente sul LOGIN NODE (`lnode02`)**, che ha accesso a internet. 
+> Lo script Slurm (`.sbatch`) eseguirà tutto **100% OFFLINE** con `TRANSFORMERS_OFFLINE=1` e `HF_DATASETS_OFFLINE=1`.
+
+---
+
+## 2. Clonazione del Progetto (sul Login Node `lnode02`)
+Sul login node, posizionati nella tua home e clona il repository:
 ```bash
 cd ~
 git clone https://github.com/gennarodambrosio-hub/model-interpretability-framework.git
@@ -22,12 +29,12 @@ cd model-interpretability-framework
 
 ---
 
-## 3. Setup Ambiente Virtuale (Python 3 + CUDA 12 + PyTorch)
-Esegui lo script di setup che crea la cartella log, cache e il virtualenv dedicato:
+## 3. Setup Ambiente e Pre-download Offline (sul Login Node `lnode02`)
+Esegui lo script di setup che crea l'ambiente virtuale e **scarica in anticipo modello e dataset nella tua cache locale `~/hf_cache`**:
 ```bash
 bash cluster/setup_env.sh
 ```
-*Lo script configurerà l'ambiente in `~/venvs/nla-training-cu12` con supporto nativo CUDA e bfloat16.*
+*Lo script configurerà l'ambiente in `~/venvs/nla-training-cu12` e scaricherà Granite 4.2 3B e il dataset. Una volta finito questo passaggio, non servirà mai più internet.*
 
 ---
 
