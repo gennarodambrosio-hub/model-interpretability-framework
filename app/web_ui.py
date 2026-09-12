@@ -32,7 +32,7 @@ st.set_page_config(
 )
 
 
-@st.cache_resource(show_spinner="Caricamento del modello in memoria...")
+@st.cache_resource(show_spinner="Caricamento del modello base in memoria...")
 def load_granite_engine(model_id: str, load_in_4bit: bool):
     engine = GraniteEngine(
         model_id=model_id,
@@ -40,6 +40,22 @@ def load_granite_engine(model_id: str, load_in_4bit: bool):
     )
     engine.load()
     return engine
+
+
+@st.cache_resource(show_spinner="Caricamento Actor NLA addestrato (Stage 3)...")
+def load_nla_actor_client(checkpoint_path: str):
+    config = NLAConfig(
+        d_model=2560,
+        injection_char="*",
+        injection_scale=150.0,
+        prompt_template="Explain the concept represented by this activation: {injection_char} Explanation: ",
+        actor_model_path=checkpoint_path,
+    )
+    client = AnthropicNLAClient(config=config)
+    p = Path(checkpoint_path)
+    if p.exists():
+        client.load_local_actor(p)
+    return client
 
 
 def main():
@@ -209,8 +225,37 @@ def main():
 
             with col_res:
                 if v_res is not None:
-                    st.info(f"🗣️ **Spiegazione in Linguaggio Naturale:**\n\n{v_res.natural_language_summary}")
+                    st.info(f"🗣️ **Logit Lens (Proiezione Vocabolario):**\n\n{v_res.natural_language_summary}")
 
+                    # --- ANTHROPIC NLA SECTION ---
+                    nla_ckpt = PROJECT_ROOT / "checkpoints" / "granite-nla-actor-layer20"
+                    if nla_ckpt.exists() and (nla_ckpt / "model.safetensors").exists():
+                        st.divider()
+                        st.markdown("### 🎯 Anthropic Natural Language Autoencoder (Actor)")
+                        st.caption("Pesi addestrati su 4x A100 (Stage 3 - Continuous Vector Injection su Layer 20)")
+                        
+                        btn_nla = st.button("✨ Genera Spiegazione con Actor NLA", key=f"btn_nla_{selected_token_idx}_{selected_layer}")
+                        if btn_nla or "nla_cache" not in st.session_state:
+                            try:
+                                with st.spinner("Iniezione continua del vettore e generazione spiegazione concettuale..."):
+                                    nla_client = load_nla_actor_client(str(nla_ckpt))
+                                    nla_res = nla_client.generate_explanation(
+                                        activation_vector=act_vec,
+                                        context_hint=f"Token: '{selected_token}' al Layer {selected_layer}",
+                                    )
+                                    st.session_state["nla_cache"] = nla_res
+                            except Exception as e_nla:
+                                st.warning(f"Inferenza NLA: {e_nla}")
+                                st.session_state["nla_cache"] = None
+
+                        if st.session_state.get("nla_cache"):
+                            nla_res = st.session_state["nla_cache"]
+                            st.success(f"**Concetto Spiegato in Linguaggio Naturale dall'Actor:**\n\n> *\"{nla_res['explanation']}\"*")
+                            col_n1, col_n2 = st.columns(2)
+                            col_n1.metric("Norma L2 Scalata (Target)", f"{nla_res['scaled_l2_norm']:.1f}")
+                            col_n2.metric("Stato Modello", nla_res.get("model_stage", "Addestrato"))
+
+                    st.divider()
                     # Bar chart of top tokens
                     df_preds = pd.DataFrame([
                         {"Token": p.token, "Probabilità": p.probability, "Logit": p.logit}
@@ -221,7 +266,7 @@ def main():
                         x="Probabilità",
                         y="Token",
                         orientation="h",
-                        title=f"Top Concetti Proiettati al Layer {selected_layer}",
+                        title=f"Top Concetti Proiettati dal Logit Lens al Layer {selected_layer}",
                         color="Probabilità",
                         color_continuous_scale="Blues",
                     )

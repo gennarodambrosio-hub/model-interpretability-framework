@@ -35,13 +35,49 @@ class NLAConfig:
 
 class AnthropicNLAClient:
     """Activation Verbalizer (Actor) interface.
-    Injects normalized activation vector into an LLM prompt embedding and generates an explanation.
+    Injects normalized activation vector into an LLM prompt embedding and generates an explanation
+    using either local trained Actor checkpoint weights or an SGLang remote endpoint.
     """
 
     def __init__(self, config: NLAConfig, sglang_url: Optional[str] = None):
         self.config = config
         self.sglang_url = sglang_url
         self.is_connected = False
+        self.actor_model = None
+        self.tokenizer = None
+        self.device = None
+
+    def load_local_actor(self, checkpoint_path: Union[str, Path], device: Optional[torch.device] = None):
+        """Loads trained NLA Actor weights from local checkpoint."""
+        ckpt_path = Path(checkpoint_path)
+        if not ckpt_path.exists():
+            raise FileNotFoundError(f"Checkpoint NLA non trovato in: {ckpt_path}")
+
+        from transformers import AutoModelForCausalLM, AutoTokenizer
+        
+        if device is None:
+            if torch.backends.mps.is_available():
+                self.device = torch.device("mps")
+            elif torch.cuda.is_available():
+                self.device = torch.device("cuda")
+            else:
+                self.device = torch.device("cpu")
+        else:
+            self.device = device
+
+        logger.info(f"Caricamento Actor NLA da {ckpt_path} su {self.device}...")
+        self.tokenizer = AutoTokenizer.from_pretrained("ibm-granite/granite-4.2-3b", trust_remote_code=True)
+        if self.tokenizer.pad_token is None:
+            self.tokenizer.pad_token = self.tokenizer.eos_token
+
+        self.actor_model = AutoModelForCausalLM.from_pretrained(
+            ckpt_path,
+            trust_remote_code=True,
+            torch_dtype=torch.bfloat16 if self.device.type in ["mps", "cuda"] else torch.float32,
+        ).to(self.device)
+        self.actor_model.eval()
+        self.is_connected = True
+        logger.info("Actor NLA caricato con successo in memoria!")
 
     def scale_activation(self, vec: torch.Tensor) -> torch.Tensor:
         """Rescales the vector to the mandatory L2-norm expected by the trained NLA Actor."""
@@ -61,30 +97,63 @@ class AnthropicNLAClient:
         self,
         activation_vector: torch.Tensor,
         context_hint: Optional[str] = None,
+        max_new_tokens: int = 48,
+        temperature: float = 0.7,
     ) -> Dict[str, Any]:
         """Generates natural language explanation for an activation vector.
-        If live NLA weights/server are configured, sends embedding injection request.
-        Otherwise, provides the exact template format ready for NLA checkpoint inference.
+        Uses the trained Actor model to verbalize the internal state into text.
         """
         scaled_vec = self.scale_activation(activation_vector)
-        formatted_prompt = self.config.prompt_template.format(
-            injection_char=self.config.injection_char
-        )
-
-        # In production with live SGLang NLA server:
-        # payload = {"prompt": formatted_prompt, "input_embeds": ..., "temperature": 0.7}
-        # response = httpx.post(f"{self.sglang_url}/generate", json=payload)
-        
-        status = "ready_for_nla_weights"
         norm_before = float(torch.linalg.vector_norm(activation_vector).item())
         norm_after = float(torch.linalg.vector_norm(scaled_vec).item())
 
+        prompt = "Explain the concept represented by this activation:  Explanation: "
+
+        if self.actor_model is not None and self.tokenizer is not None:
+            prompt_inputs = self.tokenizer(prompt, return_tensors="pt").to(self.device)
+            input_ids = prompt_inputs["input_ids"]
+            
+            # Get input embeddings
+            embeddings = self.actor_model.get_input_embeddings()(input_ids)  # [1, S, D]
+            
+            # Continuous Vector Injection as in Anthropic NLA
+            # Replace embedding right before 'Explanation:' with the scaled activation vector
+            injection_idx = 7 if embeddings.shape[1] > 7 else embeddings.shape[1] - 1
+            scaled_vec_target = scaled_vec.to(self.device).to(embeddings.dtype)
+            embeddings[:, injection_idx, :] = scaled_vec_target
+
+            with torch.no_grad():
+                outputs = self.actor_model.generate(
+                    inputs_embeds=embeddings,
+                    max_new_tokens=max_new_tokens,
+                    do_sample=(temperature > 0),
+                    temperature=max(0.01, temperature),
+                    pad_token_id=self.tokenizer.pad_token_id,
+                    eos_token_id=self.tokenizer.eos_token_id,
+                )
+
+            gen_text = self.tokenizer.decode(outputs[0], skip_special_tokens=True).strip()
+            # Clean possible prompt repetition
+            if "Explanation:" in gen_text:
+                explanation = gen_text.split("Explanation:")[-1].strip()
+            else:
+                explanation = gen_text
+
+            return {
+                "status": "generated_from_trained_actor",
+                "explanation": explanation,
+                "original_l2_norm": norm_before,
+                "scaled_l2_norm": norm_after,
+                "context_hint": context_hint,
+                "model_stage": "Stage 3 (Multi-Stage 100k Checkpoint)",
+            }
+
+        # Fallback if weights are not yet loaded in RAM
         return {
-            "status": status,
-            "injection_char": self.config.injection_char,
+            "status": "ready_for_nla_weights",
+            "explanation": "Carica l'Actor per eseguire l'inferenza con i pesi addestrati su HPC.",
             "original_l2_norm": norm_before,
             "scaled_l2_norm": norm_after,
-            "prompt_template": formatted_prompt,
             "context_hint": context_hint,
             "paper_reference": "https://transformer-circuits.pub/2026/nla/index.html",
         }
