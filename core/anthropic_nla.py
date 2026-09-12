@@ -107,7 +107,7 @@ class AnthropicNLAClient:
         norm_before = float(torch.linalg.vector_norm(activation_vector).item())
         norm_after = float(torch.linalg.vector_norm(scaled_vec).item())
 
-        prompt = "Explain the concept represented by this activation:  Explanation: "
+        prompt = "Explain the concept represented by this activation: * Explanation: "
 
         if self.actor_model is not None and self.tokenizer is not None:
             prompt_inputs = self.tokenizer(prompt, return_tensors="pt").to(self.device)
@@ -117,22 +117,25 @@ class AnthropicNLAClient:
             embeddings = self.actor_model.get_input_embeddings()(input_ids)  # [1, S, D]
             
             # Continuous Vector Injection as in Anthropic NLA
-            # Replace embedding right before 'Explanation:' with the scaled activation vector
-            injection_idx = 7 if embeddings.shape[1] > 7 else embeddings.shape[1] - 1
+            # The token ' *' is exactly at index 9
+            injection_idx = 9 if embeddings.shape[1] > 9 else embeddings.shape[1] - 1
             scaled_vec_target = scaled_vec.to(self.device).to(embeddings.dtype)
             embeddings[:, injection_idx, :] = scaled_vec_target
 
             with torch.no_grad():
                 outputs = self.actor_model.generate(
                     inputs_embeds=embeddings,
-                    max_new_tokens=max_new_tokens,
-                    do_sample=True,
-                    temperature=0.2,  # Low temperature for focused conceptual explanations
-                    top_p=0.9,
-                    repetition_penalty=1.25,  # Discourages repeating the prompt question
+                    max_new_tokens=36,
+                    do_sample=False,  # Greedy search generates the crispest, most confident concept
+                    repetition_penalty=1.2,
                     pad_token_id=self.tokenizer.pad_token_id,
                     eos_token_id=self.tokenizer.eos_token_id,
                 )
+
+            del embeddings
+            del prompt_inputs
+            if torch.backends.mps.is_available():
+                torch.mps.empty_cache()
 
             gen_text = self.tokenizer.decode(outputs[0], skip_special_tokens=True).strip()
             # Clean possible prompt repetition
@@ -143,7 +146,9 @@ class AnthropicNLAClient:
             else:
                 explanation = gen_text
 
-            # Clean leading quotes/markdown
+            # Take only the first coherent sentence/explanation
+            if "\n" in explanation:
+                explanation = explanation.split("\n")[0].strip()
             explanation = explanation.strip('"\' \n')
 
             return {
