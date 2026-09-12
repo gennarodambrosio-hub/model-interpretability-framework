@@ -42,8 +42,24 @@ def load_granite_engine(model_id: str, load_in_4bit: bool):
     return engine
 
 
-@st.cache_resource(show_spinner="Caricamento Actor NLA addestrato (Stage 3)...")
+_CURRENT_LOADED_ACTOR: tuple[str, AnthropicNLAClient] | None = None
+
 def load_nla_actor_client(checkpoint_path: str):
+    """Loads NLA actor client ensuring previous models are freed from unified memory."""
+    global _CURRENT_LOADED_ACTOR
+    
+    if _CURRENT_LOADED_ACTOR is not None and _CURRENT_LOADED_ACTOR[0] == checkpoint_path:
+        return _CURRENT_LOADED_ACTOR[1]
+
+    # Free previous actor from VRAM/MPS
+    if _CURRENT_LOADED_ACTOR is not None:
+        del _CURRENT_LOADED_ACTOR
+        _CURRENT_LOADED_ACTOR = None
+        if torch.backends.mps.is_available():
+            torch.mps.empty_cache()
+        elif torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
     config = NLAConfig(
         d_model=2560,
         injection_char="*",
@@ -55,6 +71,7 @@ def load_nla_actor_client(checkpoint_path: str):
     p = Path(checkpoint_path)
     if p.exists():
         client.load_local_actor(p)
+        _CURRENT_LOADED_ACTOR = (checkpoint_path, client)
     return client
 
 
@@ -242,7 +259,7 @@ def main():
                         st.caption(f"Pesi addestrati su 4x A100 (Continuous Vector Injection - {target_layer_str})")
                         
                         btn_nla = st.button("✨ Genera Spiegazione con Actor NLA", key=f"btn_nla_{selected_token_idx}_{selected_layer}")
-                        if btn_nla or f"nla_cache_{selected_layer}" not in st.session_state:
+                        if btn_nla:
                             try:
                                 with st.spinner(f"Iniezione continua del vettore al Layer {selected_layer} e generazione spiegazione concettuale..."):
                                     nla_client = load_nla_actor_client(str(nla_ckpt))
@@ -250,16 +267,16 @@ def main():
                                         activation_vector=act_vec,
                                         context_hint=f"Token: '{selected_token}' al Layer {selected_layer}",
                                     )
-                                    st.session_state[f"nla_cache_{selected_layer}"] = nla_res
+                                    st.session_state[f"nla_cache_{selected_layer}_{selected_token_idx}"] = nla_res
                             except Exception as e_nla:
-                                st.warning(f"Inferenza NLA: {e_nla}")
-                                st.session_state[f"nla_cache_{selected_layer}"] = None
+                                st.error(f"Inferenza NLA: {e_nla}")
+                                st.session_state[f"nla_cache_{selected_layer}_{selected_token_idx}"] = None
 
-                        if st.session_state.get(f"nla_cache_{selected_layer}"):
-                            nla_res = st.session_state[f"nla_cache_{selected_layer}"]
-                            st.success(f"**Concetto Spiegato in Linguaggio Naturale dall'Actor:**\n\n> *\"{nla_res['explanation']}\"*")
+                        cached_res = st.session_state.get(f"nla_cache_{selected_layer}_{selected_token_idx}")
+                        if cached_res:
+                            st.success(f"**Concetto Spiegato in Linguaggio Naturale dall'Actor:**\n\n> *\"{cached_res['explanation']}\"*")
                             col_n1, col_n2 = st.columns(2)
-                            col_n1.metric("Norma L2 Scalata (Target)", f"{nla_res['scaled_l2_norm']:.1f}")
+                            col_n1.metric("Norma L2 Scalata (Target)", f"{cached_res['scaled_l2_norm']:.1f}")
                             col_n2.metric("Stato Modello", f"Addestrato per Layer {selected_layer}")
 
                     st.divider()
