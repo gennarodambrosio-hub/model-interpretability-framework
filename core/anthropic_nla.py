@@ -126,8 +126,10 @@ class AnthropicNLAClient:
                 outputs = self.actor_model.generate(
                     inputs_embeds=embeddings,
                     max_new_tokens=max_new_tokens,
-                    do_sample=(temperature > 0),
-                    temperature=max(0.01, temperature),
+                    do_sample=True,
+                    temperature=0.2,  # Low temperature for focused conceptual explanations
+                    top_p=0.9,
+                    repetition_penalty=1.25,  # Discourages repeating the prompt question
                     pad_token_id=self.tokenizer.pad_token_id,
                     eos_token_id=self.tokenizer.eos_token_id,
                 )
@@ -136,8 +138,13 @@ class AnthropicNLAClient:
             # Clean possible prompt repetition
             if "Explanation:" in gen_text:
                 explanation = gen_text.split("Explanation:")[-1].strip()
+            elif "explanation:" in gen_text:
+                explanation = gen_text.split("explanation:")[-1].strip()
             else:
                 explanation = gen_text
+
+            # Clean leading quotes/markdown
+            explanation = explanation.strip('"\' \n')
 
             return {
                 "status": "generated_from_trained_actor",
