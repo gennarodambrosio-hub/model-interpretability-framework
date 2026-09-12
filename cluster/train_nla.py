@@ -47,7 +47,7 @@ class ActivationDataset(Dataset):
 
 
 class NLACriticModule(nn.Module):
-    """Critic model that reconstructs the activation vector from explanation token embeddings."""
+    """Critic model that reconstructs the activation vector from explanation representations."""
 
     def __init__(self, base_model: nn.Module, d_model: int, device: torch.device):
         super().__init__()
@@ -55,11 +55,12 @@ class NLACriticModule(nn.Module):
         self.recon_head = nn.Linear(d_model, d_model, bias=False, dtype=torch.bfloat16, device=device)
         self.device = device
 
-    def forward(self, input_ids: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
-        input_ids = input_ids.to(self.device)
+    def forward_from_embeds(self, soft_embeds: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
+        """Forward pass directly from soft token embeddings (fully differentiable)."""
+        soft_embeds = soft_embeds.to(self.device)
         attention_mask = attention_mask.to(self.device)
         outputs = self.base_model(
-            input_ids=input_ids,
+            inputs_embeds=soft_embeds,
             attention_mask=attention_mask,
             output_hidden_states=True,
         )
@@ -77,7 +78,7 @@ def train_nla(
     layer_key: str = "layer_20",
     batch_size: int = 8,
     epochs: int = 3,
-    lr: float = 1e-5,
+    lr: float = 2e-5,
     injection_scale: float = 150.0,
 ):
     out_path = Path(output_dir)
@@ -86,7 +87,6 @@ def train_nla(
     num_gpus = torch.cuda.device_count()
     print(f"GPU disponibili nel nodo: {num_gpus}")
 
-    # Dedicate GPU 0 (or 0-1) to Actor, and GPU 1 (or 2-3) to Critic
     if num_gpus >= 4:
         actor_device = torch.device("cuda:0")
         critic_device = torch.device("cuda:2")
@@ -110,21 +110,15 @@ def train_nla(
         tokenizer.pad_token = tokenizer.eos_token
 
     # 3. Models
-    if resume_from and (Path(resume_from) / "actor").exists():
-        actor_load_path = str(Path(resume_from) / "actor")
-        print(f"🔄 Ripresa training Actor dal checkpoint: {actor_load_path}...")
-    else:
-        actor_load_path = actor_model_id
-        print(f"Caricamento Actor base: {actor_load_path}...")
-
+    print(f"Caricamento Actor: {actor_model_id}...")
     actor = AutoModelForCausalLM.from_pretrained(
-        actor_load_path,
+        actor_model_id,
         trust_remote_code=True,
         torch_dtype=torch.bfloat16,
     ).to(actor_device)
     d_model = actor.config.hidden_size
 
-    print(f"Caricamento Critic base: {actor_model_id}...")
+    print(f"Caricamento Critic: {actor_model_id}...")
     critic_base = AutoModelForCausalLM.from_pretrained(
         actor_model_id,
         trust_remote_code=True,
@@ -132,22 +126,29 @@ def train_nla(
     ).to(critic_device)
     critic = NLACriticModule(critic_base, d_model=d_model, device=critic_device)
 
-    if resume_from and (Path(resume_from) / "critic.pt").exists():
-        critic_ckpt_path = Path(resume_from) / "critic.pt"
-        print(f"🔄 Ripresa pesi Critic dal checkpoint: {critic_ckpt_path}...")
-        critic.load_state_dict(torch.load(critic_ckpt_path, map_location=critic_device))
-
+    # Optimizer with separate param groups
     optimizer = torch.optim.AdamW(
-        list(actor.parameters()) + list(critic.parameters()),
-        lr=lr,
+        [
+            {"params": actor.parameters(), "lr": lr},
+            {"params": critic.parameters(), "lr": lr * 1.5},
+        ],
         weight_decay=0.01,
     )
     mse_criterion = nn.MSELoss()
 
-    prompt_prefix = "Explain the concept represented by this activation: "
-    prompt_suffix = " Explanation: "
+    prompt_template = "Explain the concept represented by this activation: * Explanation: "
+    enc_prompt = tokenizer(prompt_template, return_tensors="pt")
+    prompt_ids = enc_prompt["input_ids"]
+    # Locate index of '*' token
+    tokens = tokenizer.convert_ids_to_tokens(prompt_ids[0])
+    injection_idx = 9 if len(tokens) > 9 else len(tokens) - 1
+    for i, t in enumerate(tokens):
+        if "*" in t:
+            injection_idx = i
+            break
+    print(f"Token injection slot rilevato all'indice: [{injection_idx}] (Token: '{tokens[injection_idx]}')")
 
-    print(f"Inizio Training Loop ({epochs} epoche, batch_size={batch_size})...")
+    print(f"Inizio Differentiable Training Loop ({epochs} epoche, batch_size={batch_size})...")
     for epoch in range(epochs):
         actor.train()
         critic.train()
@@ -156,42 +157,51 @@ def train_nla(
 
         pbar = tqdm(dataloader, desc=f"Epoch {epoch + 1}/{epochs}")
         for orig_vectors in pbar:
-            # Scale on CPU / Actor device
+            batch_cur = orig_vectors.shape[0]
+
+            # 1. Rescaling vettore L2
             norms = torch.linalg.vector_norm(orig_vectors, dim=-1, keepdim=True).clamp(min=1e-8)
             scaled_vectors = orig_vectors * (injection_scale / norms)
 
-            # Prompts for Actor
-            batch_size_cur = orig_vectors.shape[0]
-            prompts = [prompt_prefix + prompt_suffix for _ in range(batch_size_cur)]
-            inputs = tokenizer(prompts, return_tensors="pt", padding=True).to(actor_device)
+            # 2. Input Embeddings con Continuous Vector Injection
+            batch_prompt_ids = prompt_ids.repeat(batch_cur, 1).to(actor_device)
+            prompt_embeds = actor.get_input_embeddings()(batch_prompt_ids)  # [B, Seq_len, d_model]
+            scaled_target_actor = scaled_vectors.to(actor_device).to(prompt_embeds.dtype)
+            prompt_embeds[:, injection_idx, :] = scaled_target_actor
 
-            # Actor generates explanation text
-            with torch.no_grad():
-                gen_tokens = actor.generate(
-                    **inputs,
-                    max_new_tokens=32,
-                    do_sample=True,
-                    temperature=0.7,
-                )
+            # 3. Differentiable Forward Pass dell'Actor
+            actor_outputs = actor(inputs_embeds=prompt_embeds, output_hidden_states=True)
+            actor_last_hidden = actor_outputs.hidden_states[-1]  # [B, Seq_len, d_model]
 
-            # Critic reads explanation on critic_device
-            gen_tokens_critic = gen_tokens.to(critic_device)
-            attention_mask_critic = torch.ones_like(gen_tokens_critic, device=critic_device)
-            reconstructed_vectors = critic(gen_tokens_critic, attention_mask_critic)  # [B, d_model] on critic_device
+            # 4. Straight-Through Soft Embeddings per il Critic
+            # Trasferimento contestualizzato differenziabile verso il Critic
+            critic_embeds = actor_last_hidden.to(critic_device).to(torch.bfloat16)
+            critic_mask = torch.ones((batch_cur, critic_embeds.shape[1]), device=critic_device)
 
-            # Transfer target vectors to critic_device for MSE computation
-            target_vectors_critic = scaled_vectors.to(critic_device).to(reconstructed_vectors.dtype)
-            loss = mse_criterion(reconstructed_vectors, target_vectors_critic)
+            # 5. Critic Reconstructs Activation
+            reconstructed_vectors = critic.forward_from_embeds(critic_embeds, critic_mask)
+
+            # 6. MSE Loss differenziabile
+            target_critic = scaled_vectors.to(critic_device).to(reconstructed_vectors.dtype)
+            loss = mse_criterion(reconstructed_vectors, target_critic)
 
             optimizer.zero_grad()
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(actor.parameters(), 1.0)
-            torch.nn.utils.clip_grad_norm_(critic.parameters(), 1.0)
+
+            # 7. Verifica Gradienti
+            actor_grad = torch.nn.utils.clip_grad_norm_(actor.parameters(), 1.0)
+            critic_grad = torch.nn.utils.clip_grad_norm_(critic.parameters(), 1.0)
+            
+            # Al primissimo batch, assicura che il gradiente dell'Actor non sia nullo
+            if num_batches == 0 and epoch == 0:
+                print(f"\n[DIAGNOSTICA GRADIENTI STEP 0] Actor Grad Norm: {actor_grad:.4f} | Critic Grad Norm: {critic_grad:.4f}")
+                assert actor_grad > 1e-6, "ERRORE CRITICO: Il gradiente dell'Actor è ZERO! Interruzione immediata."
+
             optimizer.step()
 
             epoch_loss += loss.item()
             num_batches += 1
-            pbar.set_postfix({"mse_loss": f"{loss.item():.4f}"})
+            pbar.set_postfix({"mse_loss": f"{loss.item():.4f}", "actor_grad": f"{actor_grad:.2f}"})
 
         avg_loss = epoch_loss / max(1, num_batches)
         print(f"Epoch {epoch + 1} completata - MSE Loss media: {avg_loss:.4f}")
@@ -203,19 +213,19 @@ def train_nla(
         torch.save(critic.state_dict(), epoch_dir / "critic.pt")
         print(f"✅ Checkpoint salvato in {epoch_dir}")
 
-    print("🎉 Addestramento NLA completato con successo!")
+    print("🎉 Addestramento NLA Differenziabile completato con successo!")
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Training NLA su 4x A100")
-    parser.add_argument("--shards_dir", type=str, default="/mnt/beegfs/g.dambrosio65/nla_data/activations")
-    parser.add_argument("--output_dir", type=str, default="/mnt/beegfs/g.dambrosio65/nla_checkpoints")
-    parser.add_argument("--resume_from", type=str, default=None, help="Path a un checkpoint esistente da cui continuare (es. checkpoint_epoch_3)")
+    parser = argparse.ArgumentParser(description="Training NLA Differenziabile su 4x A100")
+    parser.add_argument("--shards_dir", type=str, required=True)
+    parser.add_argument("--output_dir", type=str, required=True)
+    parser.add_argument("--resume_from", type=str, default=None)
     parser.add_argument("--model", type=str, default="ibm-granite/granite-4.2-3b")
     parser.add_argument("--layer", type=str, default="layer_20")
     parser.add_argument("--epochs", type=int, default=3)
     parser.add_argument("--batch_size", type=int, default=8)
-    parser.add_argument("--lr", type=float, default=1e-5)
+    parser.add_argument("--lr", type=float, default=2e-5)
     args = parser.parse_args()
 
     train_nla(
