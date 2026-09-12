@@ -38,17 +38,26 @@ bash cluster/setup_env.sh
 
 ---
 
-## 4. Lancio del Job Slurm con 4x A100 (Partizione `gpuq`)
-Il file [`cluster/run_nla_4xa100.sbatch`](run_nla_4xa100.sbatch) è già preconfigurato con:
-* Partizione: **`gpuq`**
-* Account: **`-A did_tesi_nlp_330`**
-* Risorse: **4 GPU A100-80GB**, 32 CPU core
-* Limite di tempo: **`06:00:00`** (rispetta il limite massimo di 7 ore della partizione `gpuq`)
+## 🚀 Pipeline Completa di Addestramento NLA (Multi-Stage)
 
-Lancia il job con:
-```bash
-sbatch cluster/run_nla_4xa100.sbatch
-```
+L'addestramento NLA (Actor-Critic secondo il paper Anthropic) su IBM Granite 4.2 3B è strutturato in 3 fasi sequenziali riproducibili:
+
+### Stage 1: PoC Iniziale (10.000 Vettori, 3 Epoche)
+* **Script:** `sbatch cluster/run_nla_4xa100.sbatch`
+* **Estrazione:** 10.000 vettori da Cosmopedia a Layer 16, 20, 28.
+* **Training:** Inizializzazione Actor & Critic da pesi base, Learning Rate: `1e-5`.
+* **Output:** `/mnt/beegfs/g.dambrosio65/nla_checkpoints/checkpoint_epoch_3` (MSE Loss: 5.61).
+
+### Stage 2: Scaling a 40.000 Vettori (Resume & Refinement)
+* **Script:** `sbatch cluster/run_nla_40k_resume.sbatch`
+* **Estrazione:** 32.286 vettori a Layer 20.
+* **Training:** Resume da Stage 1, Learning Rate ridotto a `5e-6`.
+* **Output:** `/mnt/beegfs/g.dambrosio65/nla_checkpoints_40k/checkpoint_epoch_3` (MSE Loss: 5.58).
+
+### Stage 3: Consolidamento Finale (Extended Fine-Tuning)
+* **Script:** `sbatch cluster/run_nla_stage3_final.sbatch`
+* **Training:** Resume da Stage 2, Learning Rate: `3e-6`, 3 epoche complete.
+* **Output Definitivo:** `/mnt/beegfs/g.dambrosio65/nla_checkpoints_100k/checkpoint_epoch_3/actor/` (Pesi finali dell'Actor).
 
 ---
 
