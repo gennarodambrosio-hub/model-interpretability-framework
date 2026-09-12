@@ -228,32 +228,39 @@ def main():
                     st.info(f"🗣️ **Logit Lens (Proiezione Vocabolario):**\n\n{v_res.natural_language_summary}")
 
                     # --- ANTHROPIC NLA SECTION ---
-                    nla_ckpt = PROJECT_ROOT / "checkpoints" / "granite-nla-actor-layer20"
+                    # Automatically select actor checkpoint based on the selected layer
+                    if selected_layer == 35:
+                        nla_ckpt = PROJECT_ROOT / "checkpoints" / "granite-nla-actor-layer35"
+                        target_layer_str = "Layer 35 (Deep Output Stage)"
+                    else:
+                        nla_ckpt = PROJECT_ROOT / "checkpoints" / "granite-nla-actor-layer20"
+                        target_layer_str = f"Layer {selected_layer}"
+
                     if nla_ckpt.exists() and (nla_ckpt / "model.safetensors").exists():
                         st.divider()
                         st.markdown("### 🎯 Anthropic Natural Language Autoencoder (Actor)")
-                        st.caption("Pesi addestrati su 4x A100 (Stage 3 - Continuous Vector Injection su Layer 20)")
+                        st.caption(f"Pesi addestrati su 4x A100 (Continuous Vector Injection - {target_layer_str})")
                         
                         btn_nla = st.button("✨ Genera Spiegazione con Actor NLA", key=f"btn_nla_{selected_token_idx}_{selected_layer}")
-                        if btn_nla or "nla_cache" not in st.session_state:
+                        if btn_nla or f"nla_cache_{selected_layer}" not in st.session_state:
                             try:
-                                with st.spinner("Iniezione continua del vettore e generazione spiegazione concettuale..."):
+                                with st.spinner(f"Iniezione continua del vettore al Layer {selected_layer} e generazione spiegazione concettuale..."):
                                     nla_client = load_nla_actor_client(str(nla_ckpt))
                                     nla_res = nla_client.generate_explanation(
                                         activation_vector=act_vec,
                                         context_hint=f"Token: '{selected_token}' al Layer {selected_layer}",
                                     )
-                                    st.session_state["nla_cache"] = nla_res
+                                    st.session_state[f"nla_cache_{selected_layer}"] = nla_res
                             except Exception as e_nla:
                                 st.warning(f"Inferenza NLA: {e_nla}")
-                                st.session_state["nla_cache"] = None
+                                st.session_state[f"nla_cache_{selected_layer}"] = None
 
-                        if st.session_state.get("nla_cache"):
-                            nla_res = st.session_state["nla_cache"]
+                        if st.session_state.get(f"nla_cache_{selected_layer}"):
+                            nla_res = st.session_state[f"nla_cache_{selected_layer}"]
                             st.success(f"**Concetto Spiegato in Linguaggio Naturale dall'Actor:**\n\n> *\"{nla_res['explanation']}\"*")
                             col_n1, col_n2 = st.columns(2)
                             col_n1.metric("Norma L2 Scalata (Target)", f"{nla_res['scaled_l2_norm']:.1f}")
-                            col_n2.metric("Stato Modello", nla_res.get("model_stage", "Addestrato"))
+                            col_n2.metric("Stato Modello", f"Addestrato per Layer {selected_layer}")
 
                     st.divider()
                     # Bar chart of top tokens
