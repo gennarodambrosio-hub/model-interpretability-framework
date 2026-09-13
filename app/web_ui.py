@@ -246,12 +246,15 @@ def main():
 
                     # --- ANTHROPIC NLA SECTION ---
                     # Automatically select actor checkpoint based on the selected layer
-                    if selected_layer == 35:
+                    if selected_layer == 28:
+                        nla_ckpt = PROJECT_ROOT / "checkpoints" / "granite-nla-actor-layer28"
+                        target_layer_str = "Layer 28 (Anthropic 2/3 Depth Semantic Core)"
+                    elif selected_layer == 35:
                         nla_ckpt = PROJECT_ROOT / "checkpoints" / "granite-nla-actor-layer35"
                         target_layer_str = "Layer 35 (Deep Output Stage)"
                     else:
                         nla_ckpt = PROJECT_ROOT / "checkpoints" / "granite-nla-actor-layer20"
-                        target_layer_str = f"Layer {selected_layer}"
+                        target_layer_str = "Layer 20 (Mid-Depth Semantic Core)"
 
                     if nla_ckpt.exists() and (nla_ckpt / "model.safetensors").exists():
                         st.divider()
