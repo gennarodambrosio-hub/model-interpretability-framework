@@ -4,8 +4,8 @@
 #SBATCH -A did_tesi_nlp_330
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=24
-#SBATCH --gres=gpu:a100:4
+#SBATCH --cpus-per-task=12
+#SBATCH --gres=gpu:a100:2
 #SBATCH --time=06:45:00
 #SBATCH --output=/home/G.DAMBROSIO65/nla_logs/nla-critic-l28-%j.out
 #SBATCH --error=/home/G.DAMBROSIO65/nla_logs/nla-critic-l28-%j.err
@@ -13,8 +13,8 @@
 set -euo pipefail
 
 echo "================================================================="
-echo "Avvio Job Fase 2: NLA Critic MSE Alignment (Layer 28 - ~7h) ID: \${SLURM_JOB_ID} su \$(hostname)"
-echo "Data inizio: \$(date)"
+echo "Avvio Job Fase 2: NLA Critic MSE Alignment (Layer 28 - ~7h) ID: ${SLURM_JOB_ID} su $(hostname)"
+echo "Data inizio: $(date)"
 nvidia-smi --query-gpu=index,name,memory.total --format=csv,noheader
 echo "================================================================="
 
@@ -25,19 +25,18 @@ SFT_FILE="/mnt/beegfs/g.dambrosio65/nla_data_sft/sft_dataset_l28.safetensors"
 RESUME_ACTOR="/mnt/beegfs/g.dambrosio65/nla_checkpoints_hybrid_l28/checkpoint_epoch_4/actor"
 CKPT_DIR="/mnt/beegfs/g.dambrosio65/nla_checkpoints_hybrid_l28"
 
-export HUGGINGFACE_HUB_CACHE="\${HF_HOME}/hub"
+export HUGGINGFACE_HUB_CACHE="${HF_HOME}/hub"
 export HF_DATASETS_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
-export OMP_NUM_THREADS=8
-export CUDA_VISIBLE_DEVICES=0,1,2,3
+export OMP_NUM_THREADS=6
 
 cd /home/G.DAMBROSIO65/model-interpretability-framework
 
 echo "=== Training Fase 2: Critic MSE Alignment da Checkpoint Epoch 4 (35 Epoche) ==="
 python cluster/train_sft_nla.py \
-    --sft_file "\${SFT_FILE}" \
-    --resume_actor "\${RESUME_ACTOR}" \
-    --output_dir "\${CKPT_DIR}" \
+    --sft_file "${SFT_FILE}" \
+    --resume_actor "${RESUME_ACTOR}" \
+    --output_dir "${CKPT_DIR}" \
     --layer "layer_28" \
     --start_epoch 4 \
     --epochs_sft 0 \
@@ -48,5 +47,5 @@ python cluster/train_sft_nla.py \
 
 echo "================================================================="
 echo "Job Critic MSE Layer 28 completato con successo!"
-echo "Data fine: \$(date)"
+echo "Data fine: $(date)"
 echo "================================================================="

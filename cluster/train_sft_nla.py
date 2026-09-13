@@ -66,14 +66,14 @@ def train_hybrid(
     out_path.mkdir(parents=True, exist_ok=True)
 
     num_gpus = torch.cuda.device_count()
-    if num_gpus >= 4:
+    if num_gpus >= 2:
         actor_device = torch.device("cuda:0")
-        critic_device = torch.device("cuda:2")
+        critic_device = torch.device("cuda:1")
     else:
         actor_device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
         critic_device = actor_device
 
-    print(f"Actor su: {actor_device} | Critic su: {critic_device}")
+    print(f"Dispositivi assegnati: Actor su {actor_device} | Critic su {critic_device} (GPU totali rilevate: {num_gpus})")
 
     dataset = SFTDataset(sft_file, layer_key=layer_key)
     dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, drop_last=True)
